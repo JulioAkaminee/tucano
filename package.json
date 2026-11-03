@@ -62,6 +62,14 @@
       "output": "dist",
       "buildResources": "build"
     },
+    "protocols": [
+      {
+        "name": "Tucano",
+        "schemes": [
+          "tucano"
+        ]
+      }
+    ],
     "files": [
       "out/**",
       "package.json"

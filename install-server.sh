@@ -329,8 +329,16 @@ if [ -n "$PAIR" ]; then
     '' | *@*) ;;
     *) REACH="$(id -un)@$REACH" ;;
   esac
+  # The key this machine's SSH shows (ed25519, the one the app asks for first). The link carries it, so the app
+  # knows it reaches this machine and has nothing to ask; without it (no such key, no ssh-keygen) the app shows
+  # the key it meets and asks the person to compare.
+  FP=
+  if [ -r /etc/ssh/ssh_host_ed25519_key.pub ] && command -v ssh-keygen >/dev/null 2>&1; then
+    FP=$(ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub 2>/dev/null | awk '$2 ~ /^SHA256:/ { print $2; exit }')
+  fi
   OUT=
-  if [ -n "$REACH" ]; then OUT=$("$SERVER" pair --label "$LABEL" --ssh "$REACH" 2>/dev/null || true); fi
+  if [ -n "$REACH" ] && [ -n "$FP" ]; then OUT=$("$SERVER" pair --label "$LABEL" --ssh "$REACH" --fp "$FP" 2>/dev/null || true); fi
+  if [ -z "$OUT" ] && [ -n "$REACH" ]; then OUT=$("$SERVER" pair --label "$LABEL" --ssh "$REACH" 2>/dev/null || true); fi
   # An address the server doesn't take (--host with a typo): the code and the browser link still work.
   if [ -z "$OUT" ]; then
     OUT=$("$SERVER" pair --label "$LABEL")
