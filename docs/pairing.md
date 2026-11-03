@@ -102,6 +102,11 @@ A wrong code counts like a wrong token: 10 in 10 minutes from one address, then 
 `guard.ts`). With 12 characters from a 32-character set a code has 60 bits, and it dies in 5
 minutes. Through an SSH tunnel every device reaches the server from `127.0.0.1`, so they share the count.
 
+The wait never turns away a device that is already paired: its token is 256 random bits, so there is
+nothing to guess, and one wrong code typed ten times must not lock out the app that is working. What the
+wait does turn away is everything else, the server's own token included (a `TUCANO_TOKEN` of your own
+choosing can be short).
+
 ## Two writers at once
 
 `pair`, `revoke` and a session renewing all write `pairing.json`. Each takes a lock for the moment it
