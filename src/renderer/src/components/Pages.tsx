@@ -1,4 +1,5 @@
 import { L, locale, type Lang } from '../../../shared/lang'
+import { hostAccessWarning, hostComputerLabel, serverExecution } from '../execution-context'
 import { useEffect, useState, type CSSProperties, type ReactNode } from 'react'
 import {
   agentById,
@@ -61,7 +62,7 @@ import {
 import { AccountPicker, AccountsCard, HarnessList, HarnessMcps, ModelPicker, onGateway, OutsideGateway, usableEngines } from './Harness'
 import { AppsCard } from './Apps'
 import { ApprovalCard } from './Conversation'
-import { AgentAvatar, Icon, NumberInput, SleepingToucan, time, tokens, UsageBar } from './ui'
+import { AgentAvatar, AVATARS, Icon, NumberInput, SleepingToucan, time, tokens, UsageBar } from './ui'
 import { UpdateSettings } from './Update'
 
 export function Page({ title, subtitle, actions, children }: { title: ReactNode; subtitle?: ReactNode; actions?: ReactNode; children: ReactNode }): ReactNode {
@@ -165,13 +166,24 @@ export function ColorPicker({ agent, patch }: { agent: Pick<Agent, 'color' | 'cu
   )
 }
 
-// A picture over the face, scaled down here; taken off the same way.
-export function PicturePicker({ agent, patch }: { agent: Pick<Agent, 'name' | 'color' | 'customColor' | 'picture'>; patch: (p: Partial<Agent>) => void }): ReactNode {
+// How an agent looks, here and in the onboarding: the face, a drawn character or a picture
+// of the person's own (scaled down here). One at a time.
+export function LookPicker({ agent, patch }: { agent: Pick<Agent, 'name' | 'color' | 'customColor' | 'picture' | 'avatar'>; patch: (p: Partial<Agent>) => void }): ReactNode {
   const [error, setError] = useState('')
+  const base = { name: agent.name || '?', color: agent.color, customColor: agent.customColor }
   return (
     <>
+      <div className="looks">
+        <button type="button" className={`look ${!agent.picture && !agent.avatar ? 'is-active' : ''}`} title={L('Rosto padrão', 'Default face')} onClick={() => patch({ avatar: undefined, picture: undefined })}>
+          <AgentAvatar agent={base} size={30} />
+        </button>
+        {AVATARS.map((a) => (
+          <button key={a.id} type="button" className={`look ${!agent.picture && agent.avatar?.id === a.id ? 'is-active' : ''}`} title={a.name} onClick={() => patch({ avatar: a, picture: undefined })}>
+            <AgentAvatar agent={{ ...base, avatar: a }} size={30} />
+          </button>
+        ))}
+      </div>
       <div className="row row--center">
-        <AgentAvatar agent={{ ...agent, name: agent.name || '?' }} size={40} />
         <label className="btn btn--sm">
           {L('Enviar imagem', 'Upload image')}
           <input
@@ -181,14 +193,17 @@ export function PicturePicker({ agent, patch }: { agent: Pick<Agent, 'name' | 'c
             onChange={(e) => {
               const file = e.target.files?.[0]
               e.target.value = ''
-              if (file) pictureFrom(file).then((picture) => (setError(''), patch({ picture })), () => setError(L('Não consegui abrir essa imagem.', "I couldn't open that image.")))
+              if (file) pictureFrom(file).then((picture) => (setError(''), patch({ picture, avatar: undefined })), () => setError(L('Não consegui abrir essa imagem.', "I couldn't open that image.")))
             }}
           />
         </label>
         {agent.picture && (
-          <button type="button" className="btn btn--sm btn--ghost" onClick={() => patch({ picture: undefined })}>
-            {L('Tirar', 'Remove')}
-          </button>
+          <>
+            <AgentAvatar agent={{ ...base, picture: agent.picture }} size={30} />
+            <button type="button" className="btn btn--sm btn--ghost" onClick={() => patch({ picture: undefined })}>
+              {L('Tirar a imagem', 'Remove the image')}
+            </button>
+          </>
         )}
       </div>
       {error && <span className="field__error">{error}</span>}
@@ -327,9 +342,10 @@ export function AgentPage({ id, draft: proposed, fromMessage }: { id?: string; d
               <Field label={L('Cor', 'Color')}>
                 <ColorPicker agent={draft} patch={patch} />
               </Field>
-              <Field label={L('Foto ou ícone', 'Photo or icon')}>
-                <PicturePicker agent={draft} patch={patch} />
-              </Field>
+              <div className="field">
+                <span className="field__label">{L('Aparência', 'Look')}</span>
+                <LookPicker agent={draft} patch={patch} />
+              </div>
             </Card>
           )}
 
@@ -484,7 +500,7 @@ export function AgentPage({ id, draft: proposed, fromMessage }: { id?: string; d
           {pane('ferramentas') && (
             <Card
               title={L('Navegador', 'Browser')}
-              lead={`${L('Um Chrome só dele: abre páginas, clica, preenche e lê como uma pessoa, com logins separados dos seus (você entra pelo Assumir). Clique que compra, publica, envia ou apaga pede sua aprovação.', 'A Chrome of its own: opens pages, clicks, fills in and reads like a person, with logins separate from yours (you sign in via Take over). A click that buys, publishes, sends or deletes asks for your approval.')}${isNew ? '' : L(' Muda na hora, sem precisar salvar.', ' Takes effect right away, no need to save.')}`}
+              lead={`${serverExecution() ? L('Um Chrome só dele no servidor conectado, com logins separados dos seus. Use o painel do navegador e o botão Assumir para entrar nas contas. Ações que compram, publicam, enviam ou apagam pedem aprovação.', 'A Chrome of its own on the connected server, with logins separate from yours. Use the browser panel and Take over to sign in to accounts. Actions that buy, publish, send or delete ask for approval.') : L('Um Chrome só dele: abre páginas, clica, preenche e lê como uma pessoa, com logins separados dos seus (você entra pelo Assumir). Clique que compra, publica, envia ou apaga pede sua aprovação.', 'A Chrome of its own: opens pages, clicks, fills in and reads like a person, with logins separate from yours (you sign in via Take over). A click that buys, publishes, sends or deletes asks for your approval.')}${isNew ? '' : L(' Muda na hora, sem precisar salvar.', ' Takes effect right away, no need to save.')}`}
             >
               <div className="segmented segmented--wide" role="radiogroup" aria-label={L('Navegador', 'Browser')}>
                 {[false, true].map((v) => (
@@ -501,8 +517,8 @@ export function AgentPage({ id, draft: proposed, fromMessage }: { id?: string; d
               </div>
               {!isNew && draft.browser && (
                 <div className="row computer__actions">
-                  <button className="btn btn--sm btn--ghost" title={L('Abre a janela do navegador dele pra você entrar nas contas', 'Opens its browser window so you can sign in to accounts')} onClick={() => browserAction(draft.id, 'show')}>
-                    {L('Abrir o navegador dele', 'Open its browser')}
+                  <button className="btn btn--sm btn--ghost" title={serverExecution() ? L('Assume o navegador do servidor; use o painel do navegador para interagir com ele', 'Takes over the server browser; use the browser panel to interact with it') : L('Abre a janela do navegador dele pra você entrar nas contas', 'Opens its browser window so you can sign in to accounts')} onClick={() => browserAction(draft.id, 'show')}>
+                    {serverExecution() ? L('Assumir navegador do servidor', 'Take over server browser') : L('Abrir o navegador dele', 'Open its browser')}
                   </button>
                   <button
                     className="btn btn--sm btn--ghost"
@@ -517,8 +533,8 @@ export function AgentPage({ id, draft: proposed, fromMessage }: { id?: string; d
 
           {pane('ferramentas') && (
             <Card
-              title={L('Apps do computador', 'Computer apps')}
-              lead={`${L('Os seus apps (Notas, Calendário, Mail…) que ele pode usar como uma pessoa, sem mexer no seu mouse. Em cada um, só ler ou também mexer; clique que envia, paga, publica ou apaga pede sua aprovação.', 'Your apps (Notes, Calendar, Mail…) it may use like a person, without moving your mouse. For each, read only or also change things; a click that sends, pays, publishes or deletes asks for your approval.')}${isNew ? '' : L(' Muda na hora, sem precisar salvar.', ' Takes effect right away, no need to save.')}`}
+              title={serverExecution() ? L('Apps do servidor', 'Server apps') : L('Apps do computador', 'Computer apps')}
+              lead={`${serverExecution() ? L('Apps do desktop do servidor conectado, quando disponível. Cada agente só recebe os apps liberados abaixo, com as permissões da sessão de desktop do servidor. Ações que enviam, pagam, publicam ou apagam pedem aprovação.', 'Apps on the connected server’s desktop, when available. Each agent only gets the apps granted below, with the permissions of the server’s desktop session. Actions that send, pay, publish or delete ask for approval.') : L('Os seus apps (Notas, Calendário, Mail…) que ele pode usar como uma pessoa, sem mexer no seu mouse. Em cada um, só ler ou também mexer; clique que envia, paga, publica ou apaga pede sua aprovação.', 'Your apps (Notes, Calendar, Mail…) it may use like a person, without moving your mouse. For each, read only or also change things; a click that sends, pays, publishes or deletes asks for your approval.')}${isNew ? '' : L(' Muda na hora, sem precisar salvar.', ' Takes effect right away, no need to save.')}`}
             >
               <AppsCard apps={draft.apps ?? []} onChange={(apps) => (isNew ? patch({ apps }) : (setDraft((d) => ({ ...d, apps })), patchAgent(draft.id, { apps })))} />
             </Card>
@@ -591,15 +607,18 @@ export function AgentPage({ id, draft: proposed, fromMessage }: { id?: string; d
                 </p>
               )}
               <div className="grid2">
-                <Field label={L('Esforço de raciocínio', 'Reasoning effort')} hint={L('Mais esforço pensa mais e gasta mais do plano.', 'More effort thinks longer and uses more of your plan.')}>
-                  <select value={draft.effort} onChange={(e) => patch({ effort: e.target.value as Agent['effort'] })}>
-                    {EFFORTS.map((ef) => (
-                      <option key={ef.id} value={ef.id}>
-                        {ef.label}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
+                {/* Cursor's models carry the effort in the name (…-high, …-xhigh): no separate pick. */}
+                {engine !== 'cursor' && (
+                  <Field label={L('Esforço de raciocínio', 'Reasoning effort')} hint={L('Mais esforço pensa mais e gasta mais do plano.', 'More effort thinks longer and uses more of your plan.')}>
+                    <select value={draft.effort} onChange={(e) => patch({ effort: e.target.value as Agent['effort'] })}>
+                      {EFFORTS.map((ef) => (
+                        <option key={ef.id} value={ef.id}>
+                          {ef.label}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                )}
                 <Field label={L('Limite mensal (milhões de tokens)', 'Monthly limit (millions of tokens)')} hint={L(`Conferido antes de cada turno. No limite, ${draft.name || 'o agente'} para e avisa.`, `Checked before every turn. At the limit, ${draft.name || 'the agent'} stops and tells you.`)}>
                   <NumberInput
                     min={0}
@@ -676,7 +695,7 @@ type ComputerChoice = 'none' | 'linux' | 'mac'
 const COMPUTER_CHOICES = (): { value: ComputerChoice; label: string }[] => [
   { value: 'none', label: L('Nenhum', 'None') },
   { value: 'linux', label: L('Linux isolado', 'Isolated Linux') },
-  { value: 'mac', label: L('Este computador', 'This computer') }
+  { value: 'mac', label: hostComputerLabel() }
 ]
 
 function ComputerCard({ agentId, kind, onChange }: { agentId: string; kind: ComputerChoice; onChange: (k: ComputerChoice) => void }): ReactNode {
@@ -687,11 +706,16 @@ function ComputerCard({ agentId, kind, onChange }: { agentId: string; kind: Comp
   const on = kind === 'linux'
   const state = on ? (info && info.state !== 'off' ? info.state : 'stopped') : 'off'
   const st = COMPUTER_STATE()[state]!
+  const hostWarning = hostAccessWarning()
+  const folderHintId = `computer-folder-${agentId}`
 
   return (
     <Card
       title={L('Computador', 'Computer')}
-      lead={L(
+      lead={serverExecution() ? L(
+        'Onde ele roda comandos, instala, cria e testa no servidor conectado. O Linux isolado usa o Docker do servidor. A opção Servidor conectado roda diretamente com a conta que executa o Tucano e alcança os arquivos e credenciais acessíveis a ela.',
+        'Where it runs commands, installs, builds and tests on the connected server. Isolated Linux uses the server’s Docker. Connected server runs directly as the account running Tucano and reaches files and credentials accessible to that account.'
+      ) : L(
         'Onde ele roda comandos, instala, cria e testa. O Linux é uma máquina só dele, isolada do seu computador e sem credenciais. Neste computador, ele usa o que você já tem instalado, mas alcança tudo o que você alcança.',
         'Where it runs commands, installs, builds and tests. Linux is a machine of its own, isolated from your computer and with no credentials. On this computer, it uses what you already have installed, but reaches everything you can.'
       )}
@@ -715,13 +739,10 @@ function ComputerCard({ agentId, kind, onChange }: { agentId: string; kind: Comp
         ))}
       </div>
       {confirmMac && kind !== 'mac' && (
-        <div className="mac-confirm">
+        <div className="mac-confirm" role="region" aria-label={L('Confirmar acesso ao terminal', 'Confirm shell access')}>
           <p>
-            <strong>{L('Os comandos dele vão rodar direto no seu computador, como você.', 'Its commands will run right on your computer, as you.')}</strong>{' '}
-            {L(
-              'Ele passa a alcançar seus arquivos, seus outros projetos, as credenciais que estiverem no disco (tokens, ~/.ssh) e as contas em que o terminal está logado. Uma página da web ou um arquivo com instruções escondidas pode tentar usar isso.',
-              'It can reach your files, your other projects, credentials on disk (tokens, ~/.ssh) and the accounts the terminal is signed in to. A web page or a file with hidden instructions may try to use that.'
-            )}
+            <strong>{hostWarning.title}</strong>{' '}
+            {hostWarning.detail}
           </p>
           <p className="muted small">
             {L(
@@ -731,7 +752,7 @@ function ComputerCard({ agentId, kind, onChange }: { agentId: string; kind: Comp
           </p>
           <div className="row">
             <button className="btn btn--sm btn--danger" onClick={() => (setConfirmMac(false), onChange('mac'))}>
-              {L('Liberar o computador pra ele', 'Give it this computer')}
+              {serverExecution() ? L('Liberar terminal do servidor', 'Allow server shell') : L('Liberar o computador pra ele', 'Give it this computer')}
             </button>
             <button className="btn btn--sm btn--ghost" onClick={() => setConfirmMac(false)}>
               {L('Cancelar', 'Cancel')}
@@ -742,12 +763,12 @@ function ComputerCard({ agentId, kind, onChange }: { agentId: string; kind: Comp
       {kind === 'mac' && (
         <>
           <div className="computer">
-            <span className="tag tag--warn">{L('no seu computador', 'on your computer')}</span>
-            <span className="muted small grow">{L('Os comandos começam na pasta dele.', 'Commands start in its folder.')}</span>
+            <span className="tag tag--warn">{serverExecution() ? L('no servidor conectado', 'on the connected server') : L('no seu computador', 'on your computer')}</span>
+            <span className="muted small grow">{serverExecution() ? L('Os comandos começam na pasta dele no servidor.', 'Commands start in its folder on the server.') : L('Os comandos começam na pasta dele.', 'Commands start in its folder.')}</span>
           </div>
           <Services agentId={agentId} />
           <div className="row computer__actions">
-            <button className="btn btn--sm btn--ghost" onClick={() => computerAction(agentId, 'open_folder')}>
+            <button className="btn btn--sm btn--ghost" disabled={serverExecution()} aria-describedby={serverExecution() ? folderHintId : undefined} onClick={() => computerAction(agentId, 'open_folder')}>
               {L('Abrir pasta dele', 'Open its folder')}
             </button>
             <button className="btn btn--sm btn--ghost" disabled={!info?.services.some((x) => x.running)} onClick={() => computerAction(agentId, 'restart')}>
@@ -772,10 +793,11 @@ function ComputerCard({ agentId, kind, onChange }: { agentId: string; kind: Comp
               </button>
             )}
           </div>
+          {serverExecution() && <p className="hint">{L('O Docker e a pasta /work ficam no servidor conectado. Verifique o Docker por lá se o computador não iniciar.', 'Docker and the /work folder are on the connected server. Check Docker there if the computer does not start.')}</p>}
           <Services agentId={agentId} />
           <LentFolders agentId={agentId} />
           <div className="row computer__actions">
-            <button className="btn btn--sm btn--ghost" onClick={() => computerAction(agentId, 'open_folder')}>
+            <button className="btn btn--sm btn--ghost" disabled={serverExecution()} aria-describedby={serverExecution() ? folderHintId : undefined} onClick={() => computerAction(agentId, 'open_folder')}>
               {L('Abrir pasta', 'Open folder')}
             </button>
             <button className="btn btn--sm btn--ghost" disabled={state !== 'running'} onClick={() => computerAction(agentId, 'restart')}>
@@ -798,6 +820,12 @@ function ComputerCard({ agentId, kind, onChange }: { agentId: string; kind: Comp
           </div>
         </>
       )}
+      {kind !== 'none' && serverExecution() && (
+        <p id={folderHintId} className="hint">
+          {L('Esta interface não abre pastas do servidor. Acesse a pasta no servidor conectado, por exemplo via SSH.', 'This interface cannot open server folders. Access the folder on the connected server, for example over SSH.')}
+          {info?.folder && <> {L('Caminho no servidor:', 'Server path:')} <code>{info.folder}</code></>}
+        </p>
+      )}
     </Card>
   )
 }
@@ -805,6 +833,7 @@ function ComputerCard({ agentId, kind, onChange }: { agentId: string; kind: Comp
 // What the agent left running (servers, dashboards), on its computer or on the Mac.
 function Services({ agentId }: { agentId: string }): ReactNode {
   const info = useStore((s) => computerOf(s, agentId))
+  const previewUnavailable = !!window.tucano.remoteMode || window.tucano.servicePreviews === false
   return (
     <>
       {info && info.services.length > 0 && (
@@ -817,7 +846,7 @@ function Services({ agentId }: { agentId: string }): ReactNode {
               </span>
               {svc.running && svc.url && (
                 <>
-                  <button className="btn btn--sm btn--ghost" onClick={() => openExternal(reachable(svc.url!))}>
+                  <button className="btn btn--sm btn--ghost" disabled={previewUnavailable} title={previewUnavailable ? L('Encaminhe esta porta do servidor por SSH ou configure uma URL HTTPS e abra a página separadamente.', 'Forward this server port over SSH or configure an HTTPS URL, then open its page separately.') : undefined} onClick={() => openExternal(reachable(svc.url!))}>
                     {L('Abrir', 'Open')}
                   </button>
                   <button className="btn btn--sm btn--ghost" onClick={() => stopService(agentId, svc.name)}>
@@ -842,13 +871,13 @@ function LentFolders({ agentId }: { agentId: string }): ReactNode {
   return (
     <div className="folders">
       <div className="row row--between">
-        <strong className="small">{L('Pastas do seu computador', 'Folders from your computer')}</strong>
+        <strong className="small">{serverExecution() ? L('Pastas do servidor conectado', 'Folders from the connected server') : L('Pastas do seu computador', 'Folders from your computer')}</strong>
         <button className="btn btn--sm" onClick={() => void lendFolder(agentId).then(setError)}>
           {L('Emprestar pasta…', 'Lend a folder…')}
         </button>
       </div>
       {folders.length === 0 ? (
-        <p className="muted small">{L('Empreste a pasta de um projeto pra ele trabalhar nela. Ele mexe nos arquivos de verdade, então use git pra poder desfazer.', 'Lend it a project folder to work in. It changes the real files, so use git to be able to undo.')}</p>
+        <p className="muted small">{serverExecution() ? L('Empreste uma pasta de projeto no servidor conectado. O caminho deve existir lá. Ele mexe nos arquivos de verdade, então use git pra poder desfazer.', 'Lend a project folder on the connected server. The path must exist there. It changes the real files, so use git to be able to undo.') : L('Empreste a pasta de um projeto pra ele trabalhar nela. Ele mexe nos arquivos de verdade, então use git pra poder desfazer.', 'Lend it a project folder to work in. It changes the real files, so use git to be able to undo.')}</p>
       ) : (
         <>
           <div className="table">
@@ -1017,7 +1046,7 @@ export function ConnectorsPage(): ReactNode {
         <div className="empty empty--card">
           <Icon name="plug" size={22} />
           <p>{L('Nenhum conector ainda.', 'No connectors yet.')}</p>
-          <p className="muted">{L('Adicione um servidor MCP remoto (GitHub, Linear, Sentry…) ou um local, que roda como processo no seu computador.', 'Add a remote MCP server (GitHub, Linear, Sentry…) or a local one, which runs as a process on your computer.')}</p>
+          <p className="muted">{serverExecution() ? L('Adicione um servidor MCP remoto (GitHub, Linear, Sentry…) ou um local, que roda como processo no servidor conectado.', 'Add a remote MCP server (GitHub, Linear, Sentry…) or a local one, which runs as a process on the connected server.') : L('Adicione um servidor MCP remoto (GitHub, Linear, Sentry…) ou um local, que roda como processo no seu computador.', 'Add a remote MCP server (GitHub, Linear, Sentry…) or a local one, which runs as a process on your computer.')}</p>
         </div>
       )}
       <div className="stack-list">
@@ -1052,7 +1081,7 @@ export function ConnectorsPage(): ReactNode {
                 <div className="tools">
                   {c.kind === 'stdio' && (
                     <p className="warn-box">
-                      <Icon name="terminal" size={14} /> {L('Conector local: roda um processo no seu computador com o seu usuário.', 'Local connector: runs a process on your computer as your user.')}
+                      <Icon name="terminal" size={14} /> {serverExecution() ? L('Conector local ao servidor: roda um processo com a conta que executa o Tucano no servidor conectado.', 'Server-local connector: runs a process as the account running Tucano on the connected server.') : L('Conector local: roda um processo no seu computador com o seu usuário.', 'Local connector: runs a process on your computer as your user.')}
                     </p>
                   )}
                   {c.error && <p className="note note--error">{c.error}</p>}
@@ -1190,7 +1219,7 @@ function AddConnector({ onDone }: { onDone: (id?: string) => void }): ReactNode 
       ) : (
         <>
           <p className="warn-box">
-            <Icon name="terminal" size={14} /> {L('Vai rodar um processo no seu computador, com o seu usuário. Só adicione comandos em que você confia.', 'It will run a process on your computer, as your user. Only add commands you trust.')}
+            <Icon name="terminal" size={14} /> {serverExecution() ? L('Vai rodar um processo no servidor conectado, com a conta que executa o Tucano. Pode alcançar os arquivos e credenciais dessa conta. Só adicione comandos em que você confia.', 'It will run a process on the connected server, as the account running Tucano. It can reach that account’s files and credentials. Only add commands you trust.') : L('Vai rodar um processo no seu computador, com o seu usuário. Só adicione comandos em que você confia.', 'It will run a process on your computer, as your user. Only add commands you trust.')}
           </p>
           <div className="grid2">
             <Field label={L('Comando', 'Command')}>

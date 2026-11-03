@@ -1,6 +1,6 @@
 {
   "name": "tucano",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "private": true,
   "description": "Tucano: your team of AI agents on your computer, with scopes, approvals and budgets.",
   "homepage": "https://tucano.sh",
@@ -14,10 +14,13 @@
     "server": "node out/main/server.js",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
+    "test:server": "node scripts/server-e2e.mjs",
     "dist": "sh scripts/dist.sh",
     "dist:win": "npm run build && electron-builder --win nsis --x64 --publish never",
     "install-app": "npm run dist && sh scripts/install-app.sh",
-    "release": "sh scripts/release.sh"
+    "release": "sh scripts/release.sh",
+    "test:installer": "node --test scripts/installer-test.mjs",
+    "test:connections": "node scripts/connections-e2e.mjs"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",
@@ -27,6 +30,7 @@
     "electron": "^44.8.0",
     "electron-builder": "^26.15.3",
     "electron-vite": "^6.0.0",
+    "open-bot-avatar": "0.1.1",
     "playwright": "^1.64.1",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
@@ -45,6 +49,14 @@
   },
   "build": {
     "appId": "dev.tucano.app",
+    "protocols": [
+      {
+        "name": "Tucano pairing",
+        "schemes": [
+          "tucano"
+        ]
+      }
+    ],
     "productName": "Tucano",
     "toolsets": {
       "appimage": "1.0.3"

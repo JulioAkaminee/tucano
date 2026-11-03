@@ -18,9 +18,10 @@ import { codexEngine, userCodexProvider } from './engines/codex'
 import { opencodeEngine } from './engines/opencode'
 import { piEngine } from './engines/pi'
 import { geminiAppDir, geminiEngine } from './engines/gemini'
+import { cursorAppDir, cursorEngine } from './engines/cursor'
 import { accountDir, accountStatus, adoptLoginShellPath, detectEngines, type CodexModel } from './engines/detect'
 import { fakeEngine } from './engines/fake'
-import { DesktopApps, macApps, SELF } from './apps'
+import { DesktopApps, desktopBin, macApps, SELF } from './apps'
 import { linuxApps, windowsApps, type SystemApp } from './apps-os'
 import type { Engine } from './engines/types'
 import { ConnectorManager } from './connectors'
@@ -46,11 +47,14 @@ import { Routines } from './routines'
 import { Runner } from './runs'
 import { agentFromDraft, availableModels, tucaAgent, tucaHello } from './tuca'
 import { seed } from './seed'
+import { serverDesktopState } from '../server/desktop'
 
 const dataDir = process.env['TUCANO_DATA'] ?? join(process.cwd(), '.tucano')
 const fake = process.env['TUCANO_FAKE_ENGINES'] === '1'
 // Run by the server (src/server): no window, and the screens are in a browser elsewhere.
 const serverMode = process.env['TUCANO_SERVER'] === '1'
+const serverDesktop = serverDesktopState(process.env, process.platform, !!desktopBin())
+const desktopAvailable = !serverMode || serverDesktop.ready
 mkdirSync(dataDir, { recursive: true })
 
 const db = new Db(join(dataDir, 'tucano.db'))
@@ -81,7 +85,7 @@ const DEFAULTS: Omit<Settings, 'engines'> = {
 }
 
 const unknownEngine: EngineStatus = { installed: false, loggedIn: false }
-let engines: Record<EngineId, EngineStatus> = { claude: unknownEngine, codex: unknownEngine, opencode: unknownEngine, pi: unknownEngine, gemini: unknownEngine }
+let engines: Record<EngineId, EngineStatus> = { claude: unknownEngine, codex: unknownEngine, opencode: unknownEngine, pi: unknownEngine, gemini: unknownEngine, cursor: unknownEngine }
 // The models OpenCode and Pi list (what the person has logins for), from the last check.
 let listed: Partial<Record<EngineId, string[]>> = {}
 // Codex's own catalog for this login (names and what each model is for), from the last check.
@@ -90,7 +94,7 @@ let codexCatalog: CodexModel[] = []
 const fakeStatus = (v: string): EngineStatus => ({ installed: true, loggedIn: true, path: 'fake', version: v, account: L('Motor de teste', 'Test engine'), route: 'plan' })
 async function detect(): Promise<void> {
   if (fake) {
-    engines = { claude: fakeStatus('0.0.0'), codex: fakeStatus('0.0.0'), opencode: { ...fakeStatus('0.0.0'), route: 'providers', account: 'OpenAI, OpenCode · 3 modelos' }, pi: { installed: false, loggedIn: false }, gemini: { installed: false, loggedIn: false } }
+    engines = { claude: fakeStatus('0.0.0'), codex: fakeStatus('0.0.0'), opencode: { ...fakeStatus('0.0.0'), route: 'providers', account: 'OpenAI, OpenCode · 3 modelos' }, pi: { installed: false, loggedIn: false }, gemini: { installed: false, loggedIn: false }, cursor: { installed: false, loggedIn: false } }
     listed = { opencode: ['openai/gpt-5.5', 'opencode/big-pickle', 'opencode-go/qwen3.8-max'] }
   } else ({ engines, listed, codexCatalog } = await detectEngines(codexHome))
   await checkAccounts()
@@ -167,13 +171,14 @@ function watchAccount(id: string): void {
 const githubInfo = (): Settings['github'] => githubRef?.info()
 
 const engineImpls: Record<EngineId, Engine> = fake
-  ? { claude: fakeEngine('claude'), codex: fakeEngine('codex'), opencode: fakeEngine('opencode'), pi: fakeEngine('pi'), gemini: fakeEngine('gemini') }
+  ? { claude: fakeEngine('claude'), codex: fakeEngine('codex'), opencode: fakeEngine('opencode'), pi: fakeEngine('pi'), gemini: fakeEngine('gemini'), cursor: fakeEngine('cursor') }
   : {
       claude: claudeEngine(() => engines.claude.path, async () => quietClaude(userProvider())),
       codex: codexEngine(() => engines.codex.path, codexHome, loginEnv, async () => quietCodex(userCodexProvider())),
       opencode: opencodeEngine(() => engines.opencode.path, join(dataDir, 'opencode-home'), loginEnv, () => engines.opencode.version),
       pi: piEngine(() => engines.pi.path, join(dataDir, 'pi'), loginEnv),
-      gemini: geminiEngine(() => engines.gemini.path, geminiAppDir(dataDir), loginEnv)
+      gemini: geminiEngine(() => engines.gemini.path, geminiAppDir(dataDir), loginEnv),
+      cursor: cursorEngine(() => engines.cursor.path, cursorAppDir(dataDir), loginEnv)
     }
 
 // A command in the login shell, where SSO tools live; what it prints, trimmed.
@@ -333,7 +338,7 @@ const shelfNow = async (): Promise<ShelfApp[]> => {
   if (Date.now() - shelf.at > 5 * 60_000) void restock()
   return shelf.list
 }
-if (!serverMode && !fake) setTimeout(() => void restock(), 4_000).unref()
+if (desktopAvailable && !fake) setTimeout(() => void restock(), 4_000).unref()
 
 // On a server there's no Electron: the agents' Chrome takes the picture instead.
 const shoot: Shooter = (opts) => (serverMode && chrome ? chrome.shot(opts) : electronShoot(opts))
@@ -365,7 +370,7 @@ const chrome =
 const host: BrowserHost = chrome ? (agentId, op, args) => chrome.run(agentId, op, args) : electronHost
 
 const secrets = new Secrets(db, fake ? plainCipher : mainCipher(process.parentPort))
-// The person's own apps, through agent-desktop (none on a server: no screen there).
+// Local apps, or an explicitly enabled private Linux desktop on this server.
 // Off a Mac it needs the installed apps to know each one's program.
 const desktopApps = new DesktopApps(undefined, {
   installed: async () => (await shelfNow()).map(({ bundleId, ...a }) => ({ ...a, ...(bundleId ? { id: bundleId } : {}) }))
@@ -442,7 +447,7 @@ const runner = new Runner({
   memory,
   computers,
   browser,
-  ...(serverMode ? {} : { apps: desktopApps }),
+  ...(desktopAvailable ? { apps: desktopApps } : {}),
   routines,
   skills,
   models: () => availableModels(settings(), listed),
@@ -953,15 +958,20 @@ const api: Api = {
   },
 
   // The person's apps (agent-desktop): whether it's there and allowed, and what's open.
-  desktopStatus: async () => (serverMode ? { installed: false, server: true } : desktopApps.status()),
+  desktopStatus: async () => {
+    if (!serverMode) return desktopApps.status()
+    if (!desktopAvailable) return { installed: false, server: true, desktopEnabled: serverDesktop.enabled, desktopReady: false, suggestion: serverDesktop.suggestion }
+    const status = await desktopApps.status()
+    return { ...status, server: true, desktopEnabled: true, desktopReady: status.installed && ['granted', 'not_required'].includes(status.accessibility ?? ''), suggestion: status.suggestion ?? (!status.installed ? 'Install agent-desktop@1.0.2 for the VPS service user and restart the service.' : 'If apps cannot be read, check the Linux AT-SPI service inside the private desktop session.') }
+  },
   // The installed apps come from a shelf kept on disk (instant, refreshed behind); the open
   // ones are asked each time, apart, so the list never waits for them.
-  installedApps: async () => (serverMode ? [] : shelfNow()),
-  openApps: async () => (serverMode ? [] : desktopApps.foreground().catch(() => [])),
-  installDesktop: () => installer('npm install -g agent-desktop@1.0.2'), // the version the apps feature is tested with
+  installedApps: async () => (desktopAvailable ? shelfNow() : []),
+  openApps: async () => (desktopAvailable ? desktopApps.foreground().catch(() => []) : []),
+  installDesktop: () => serverMode ? { opened: false, command: 'npm install -g agent-desktop@1.0.2' } : installer('npm install -g agent-desktop@1.0.2'), // the version the apps feature is tested with
   desktopPermissions: () => {
     // Opens the system's privacy settings at Accessibility (agent-desktop knows where).
-    void desktopApps.guide()
+    if (!serverMode) void desktopApps.guide()
   }
 }
 

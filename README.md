@@ -12,7 +12,7 @@ They do the work. Anything that touches the real world waits for your yes.
 [![Release](https://img.shields.io/github/v/release/eduwxyz/tucano?color=FF8A1F&label=release)](https://github.com/eduwxyz/tucano/releases/latest)
 [![License](https://img.shields.io/badge/license-Apache--2.0-141210)](LICENSE)
 [![macOS](https://img.shields.io/badge/macOS-Apple%20silicon%20%7C%20Intel-141210?logo=apple)](#install) [![Linux](https://img.shields.io/badge/Linux-x64%20%7C%20ARM64-141210?logo=linux&logoColor=white)](#install) [![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-141210)](#install)
-[![Runs on](https://img.shields.io/badge/runs%20on-Claude%20Code%20·%20Codex%20·%20OpenCode%20·%20Pi-E2541B)](#runs-on-what-you-already-have)
+[![Runs on](https://img.shields.io/badge/runs%20on-Claude%20Code%20·%20Codex%20·%20Cursor%20·%20OpenCode%20·%20Pi-E2541B)](#runs-on-what-you-already-have)
 
 **English** · [Português](README.pt-BR.md) · [tucano.sh](https://tucano.sh) · [@tucanosh](https://x.com/tucanosh) · [Changelog](CHANGELOG.md)
 
@@ -28,8 +28,8 @@ Coding agents got good. Working with *several* of them is still a mess of termin
 
 - **A team, not a prompt box.** Agents with names, roles, tools and memory. They talk in channels, call each other with `@mentions` and hand work over: one finds the bug, another fixes it, a third reviews it, and you get the result.
 - **Your rules.** Each agent sees only the tools you give it, with *no access*, *read*, or *read and write* per tool. Merges, purchases, posts, emails and deletes become an approval tied to the exact action, on your computer or your phone.
-- **Runs on what you already have.** Agents think with the Claude Code, Codex, OpenCode or Pi on your computer, the way you set them up: your subscription, your company's AI gateway, or your providers. No API key to paste, no per-token bill from us, and Tucano never sees your password.
-- **Everything stays on your computer.** Conversations, memory, logins, files. There is no Tucano server.
+- **Runs on what you already have.** Agents think with the Claude Code, Codex, Cursor CLI, OpenCode or Pi on your computer, the way you set them up: your subscription, your company's AI gateway, or your providers. No API key to paste, no per-token bill from us, and Tucano never sees your password.
+- **Your machines, your data.** Conversations, memory, logins and files stay on your computer or a server you own. There is no Tucano-hosted service.
 
 ## What it does
 
@@ -87,6 +87,7 @@ Give an agent the apps on your computer, such as Notes, Calendar or Spotify, eac
 |---|---|---|
 | [Claude Code](https://code.claude.com) | Claude Pro or Max, or your company's login | Reads only the `env` block and `apiKeyHelper` of your `~/.claude/settings.json`; hooks, plugins and permissions stay out |
 | [Codex](https://github.com/openai/codex) | ChatGPT Plus, Pro or Business | Runs with a home of its own, so your skills, `AGENTS.md` and plugins don't leak in; you sign in once inside Tucano |
+| [Cursor CLI](https://cursor.com/cli) | Your Cursor account (`cursor-agent login`) | Runs with a home of its own, so your hooks, plugins, skills and `~/.cursor/mcp.json` servers don't load; Cursor's own file reads, writes and shell stay off; each reply adds about 10k tokens of Cursor's own prompt |
 | [OpenCode](https://opencode.ai) | The providers you configured | Uses the models you have logins for |
 | [Pi](https://pi.dev) | The providers you configured | Uses the models you have logins for |
 
@@ -129,7 +130,7 @@ curl -fsSL https://github.com/eduwxyz/tucano/releases/latest/download/install.sh
 
 It downloads the latest release and opens it. On a Mac it puts Tucano in **Applications**; on Linux it installs the .deb with apt (it asks for your password) or, without apt, the AppImage in `~/.local/bin` with an entry in the applications menu. Run on Windows (in Git Bash, say), it points you to the PowerShell command above.
 
-**On a server** (a VPS, to keep routines running while your computer sleeps): Tucano can also run without a window and be used from a browser. See [docs/server.md](docs/server.md). This is experimental.
+**On a server** (a VPS, to keep routines running while your computer sleeps): Tucano can also run without a window. Use a browser, or pair independent **Personal** and **Work** VPSs from the desktop app's top environment selector while keeping **This computer** for local work. Each environment has its own agents, data and sign-ins. See [docs/server.md](docs/server.md) for installation, SSH/HTTPS pairing and the current pre-release build instructions. This is experimental.
 
 From 0.1.2 on, Tucano updates itself: it downloads a new version in the background and shows **Restart** in the sidebar when it's ready (or it goes in the next time you quit). Earlier versions update with the same download or command. On Linux the AppImage and the .deb update themselves too; the .deb asks for your password to put the update in. So does Windows, with no warning.
 
@@ -160,7 +161,7 @@ On Linux and Windows, use **Ctrl** instead of **⌘**. Closing the window keeps 
 flowchart LR
   subgraph Mac["Your computer"]
     UI["Window<br/>(React)"] <-->|MessagePort| Core["Core process<br/>SQLite · runs · memory · routines"]
-    Core -->|"one turn, isolated"| CLI["Harness CLI<br/>claude · codex · opencode · pi"]
+    Core -->|"one turn, isolated"| CLI["Harness CLI<br/>claude · codex · cursor · opencode · pi"]
     CLI -->|"secret per-turn URL<br/>only this agent's tools"| GW["Tucano MCP gateway"]
     GW --> Tools["Connectors (MCP)<br/>computer · browser · memory"]
     GW -.->|"write action"| OK{{"Your approval"}}
@@ -257,3 +258,5 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. The origi
 [Apache-2.0](LICENSE). Tucano is not affiliated with Anthropic, OpenAI or any of the tools it connects to.
 
 The apps feature runs on [agent-desktop](https://github.com/vercel-labs/agent-desktop) by Vercel Labs (Apache-2.0), installed separately. Thank you!
+
+Agents' drawn avatars come from [Open Bot Avatar](https://github.com/DominikScholz/open-bot-avatar) by Dominik Scholz (MIT), with its gallery. Thank you!
