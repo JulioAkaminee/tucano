@@ -1,15 +1,16 @@
 // The server's own commands, run on the machine it lives on, so only whoever can log in there
 // decides who may sign in:
 //
-//   node out/main/server.js pair [--label "My Mac"] [--ssh you@host[:port] | --url https://…]
+//   node out/main/server.js pair [--label "My Mac"] [--ssh you@host[:port] [--fp SHA256:…] | --url https://…]
 //                                                     a one-time code, the link that signs a browser in, and
 //                                                     (with --ssh or --url) the link that pairs the Mac app
+//                                                     (--fp: this machine's SSH key, so the app has nothing to ask)
 //   node out/main/server.js devices                   who is paired
 //   node out/main/server.js revoke <id|label>|--all   take access away
 //
 // Returns the exit code, or undefined when the arguments aren't a command and the server should start.
 
-import { DEFAULT_PORT, formatPairLink, parseServerUrl, parseSshTarget, type Reach } from '../shared/pairlink'
+import { DEFAULT_PORT, fingerprintOk, formatPairLink, parseServerUrl, parseSshTarget, type Reach } from '../shared/pairlink'
 import { CODE_TTL_MS, type Pairing } from './pairing'
 
 const USAGE = [
@@ -18,6 +19,7 @@ const USAGE = [
   '  (no command)              start the server',
   '  pair [--label "My Mac"]   make a one-time code to pair a browser or the app',
   '       [--ssh you@host[:port]]   also print the link for the Mac app, to reach this server by an SSH tunnel',
+  '       [--fp SHA256:…]           with --ssh: the fingerprint of this machine\'s SSH key, carried in that link',
   '       [--url https://…]         or the link for the app to reach it at an address (https, or Tailscale)',
   '  devices                   list the paired devices',
   '  revoke <id|label>         take one device\'s access away',
@@ -78,12 +80,17 @@ function run(cmd: string, args: string[], pairing: Pairing, base: string, say: (
     // Checked before the code is made, so a typo doesn't use one up.
     const reach = reachOf(args, say)
     if (reach === null) return 2
+    const fp = flag(args, '--fp')
+    if (args.some((a) => a === '--fp' || a.startsWith('--fp=')) && !(reach?.via === 'ssh' && fingerprintOk(fp))) {
+      say('--fp wants the fingerprint of this machine’s SSH key (SHA256:…), and goes with --ssh.')
+      return 2
+    }
     const { code, expires } = pairing.invite(label)
     say(`Pairing code: ${code}`)
     say(`For one device, once, until ${stamp(expires)} UTC (${CODE_TTL_MS / 60_000} minutes).`)
     if (reach) {
       const name = label?.trim() || (reach.via === 'ssh' ? reach.host : new URL(reach.url).hostname)
-      say(`For the Mac app: ${formatPairLink({ code, reach, remotePort: Number(new URL(base).port) || DEFAULT_PORT, name })}`)
+      say(`For the Mac app: ${formatPairLink({ code, reach, remotePort: Number(new URL(base).port) || DEFAULT_PORT, name, ...(fp ? { fp } : {}) })}`)
     }
     say(`In a browser: ${base}/?pair=${code}`)
     say('Through a tunnel or a proxy, use the address you reach the server at instead of that one.')

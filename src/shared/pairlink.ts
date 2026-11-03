@@ -1,6 +1,6 @@
 // The link that hands the Mac app everything it needs to reach a server and pair with it:
 //
-//   tucano://pair?v=1&code=K7QM-2XPD-9TWH&ssh=you@203.0.113.7:22&port=7337&name=My%20VPS
+//   tucano://pair?v=1&code=K7QM-2XPD-9TWH&ssh=you@203.0.113.7:22&port=7337&fp=SHA256:…&name=My%20VPS
 //   tucano://pair?v=1&code=K7QM-2XPD-9TWH&url=https://tucano.example.com&name=My%20VPS
 //
 // The server's `pair` command prints it. It is text that comes from outside (a chat, a web page), and the
@@ -8,18 +8,24 @@
 // be makes the whole link a refusal, and the app never builds a command from a rejected link. A user or a
 // host can't start with "-" (ssh would read it as an option, `-oProxyCommand=…` runs a command), and only
 // letters, digits and a few separators get through at all.
+//
+// `fp` is the SSH host key's fingerprint, which the install script reads on the server itself. The link reaches
+// the person through a login they already trust, so the key it names is the one to trust: the app checks the
+// server against it and has nothing to ask. Without it the app shows the fingerprint and asks.
 
 export type Reach =
   | { via: 'ssh'; user: string; host: string; port: number } // an SSH tunnel to the server's own loopback
   | { via: 'url'; url: string } // an address reached as it is: Tailscale, or HTTPS (a proxy, a tunnel)
 
-export type PairLink = { code: string; reach: Reach; remotePort: number; name: string }
+export type PairLink = { code: string; reach: Reach; remotePort: number; name: string; fp?: string }
 export type Parsed = { ok: true; link: PairLink } | { ok: false; error: string }
 
 export const DEFAULT_PORT = 7337
 const MAX_LINK = 2048
 
 const CODE = /^[A-HJ-NP-Z2-9]{12}$/ // pairing.ts: no 0, O, 1 or I
+// What `ssh-keygen -lf` prints for a key: SHA256 and 43 characters of base64 (a 32 byte digest, no padding).
+export const fingerprintOk = (text: unknown): text is string => typeof text === 'string' && /^SHA256:[A-Za-z0-9+/]{43}$/.test(text)
 const USER = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}$/
 const HOSTNAME = /^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/
 const IPV6 = /^[0-9A-Fa-f:.]{2,45}$/
@@ -100,10 +106,14 @@ export function parsePairLink(text: string): Parsed {
 
   const remotePort = port(q.get('port') ?? undefined, DEFAULT_PORT)
   if (remotePort === undefined) return bad('the port is not valid')
+  const fp = q.get('fp')
+  if (fp !== null && !(reach.via === 'ssh' && fingerprintOk(fp))) return bad('the key fingerprint is not valid (SHA256:…, and only with ssh)')
   const fallback = reach.via === 'ssh' ? reach.host : new URL(reach.url).hostname
   const name = (q.get('name') ?? '').replace(/\p{Cc}/gu, ' ').trim().slice(0, 60) || fallback
 
-  return { ok: true, link: { code: `${code.slice(0, 4)}-${code.slice(4, 8)}-${code.slice(8)}`, reach, remotePort, name } }
+  const link: PairLink = { code: `${code.slice(0, 4)}-${code.slice(4, 8)}-${code.slice(8)}`, reach, remotePort, name }
+  if (fp !== null) link.fp = fp
+  return { ok: true, link }
 }
 
 export function formatPairLink(link: PairLink): string {
@@ -112,6 +122,7 @@ export function formatPairLink(link: PairLink): string {
     const { user, host, port: p } = link.reach
     q.set('ssh', `${user}@${host.includes(':') ? `[${host}]` : host}${p === 22 ? '' : `:${p}`}`)
     if (link.remotePort !== DEFAULT_PORT) q.set('port', String(link.remotePort))
+    if (link.fp) q.set('fp', link.fp)
   } else {
     q.set('url', link.reach.url)
   }
