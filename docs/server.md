@@ -29,10 +29,12 @@ npm run server
 It prints the address to open:
 
 ```
-Tucano server: http://127.0.0.1:7337/?token=…
+Tucano server: http://127.0.0.1:7337/
 ```
 
-Open that link once. The token signs the browser in, and a cookie keeps it signed in. The token lives in `~/.tucano-server/server-token`. To sign every browser out, delete that file and restart Tucano.
+Open that address and enter the token from `~/.tucano-server/server-token` (or from `TUCANO_TOKEN` if configured). Read the file in your private SSH terminal, for example with `cat ~/.tucano-server/server-token`, and paste it into the password field. The form sends it in a POST body, and an HttpOnly, SameSite=Lax cookie keeps the browser signed in. Do not put tokens in URLs: old `?token=` links are rejected and the server no longer prints the token. Existing cookies for the default generated token keep working.
+
+To sign every browser out, delete `server-token` and restart Tucano, or change `TUCANO_TOKEN` and restart if using that override. Never enable request-body or cookie logging at a reverse proxy.
 
 ### Signing the harnesses in
 
@@ -50,7 +52,7 @@ Codex is signed in from Tucano's **Settings › Models**, like on a desktop. On 
 By default the server only listens on the server itself (`127.0.0.1`), because anyone who has the token controls your agents. Pick one of these ways to reach it:
 
 - **SSH tunnel**, the simplest: run `ssh -L 7337:127.0.0.1:7337 you@your-server`, then open the printed link on your computer.
-- **Tailscale** (or another private network): set `TUCANO_HOST` to the server's Tailscale address, then open `http://<that address>:7337/?token=…` from any of your devices, including your phone.
+- **Tailscale** (or another private network): set `TUCANO_HOST` to the server's Tailscale address, then open `http://<that address>:7337/` from any of your devices, including your phone.
 - **A reverse proxy with HTTPS** (Caddy, nginx) on a domain of yours: keep Tucano on `127.0.0.1` and point the proxy at it. Turn off response buffering for `/events`, which is a live event stream. For example, with Caddy:
 
   ```
@@ -61,7 +63,13 @@ By default the server only listens on the server itself (`127.0.0.1`), because a
   }
   ```
 
-Never expose port 7337 on a public address without HTTPS.
+Never expose port 7337 on a public address without HTTPS. Set `TUCANO_COOKIE_SECURE=1` when serving through HTTPS so browsers never send the authentication cookie over plain HTTP. Leave it off for a plain HTTP loopback SSH tunnel.
+
+The browser's `Origin` must match the request's scheme, host and port on `/login`, `/events` and `/rpc`. If an HTTPS proxy rewrites `Host`, list its public origin in `TUCANO_ORIGINS`, for example `https://tucano.example.com`. Command-line requests without `Origin` still require authentication.
+
+Forwarded headers are ignored by default, including through SSH tunnels. To use a reverse proxy **on the same machine**, set `TUCANO_TRUST_PROXY=1` and keep the listener private. Only loopback peers are then trusted: `X-Forwarded-Proto: https` marks cookies Secure, and the last entry in `X-Forwarded-For`, if it is a valid IP, identifies the client for failed-login limits. The proxy must overwrite or append the real peer IP, and overwrite the protocol header. Do not enable this for direct clients or SSH tunnels, which can supply these headers themselves. Non-loopback proxies need the explicit cookie/origin settings and share the socket-address rate limit.
+
+Ten wrong token attempts from an address in ten minutes cause new authentication attempts to return `429` with `Retry-After`. Visits without credentials do not count. Invalid cookies are expired. During the wait, all authentication from that address is blocked, including valid cookies: clients sharing an address or SSH tunnel share the limit. The limit is in memory and resets on restart; use a long random token and your proxy's own limits too.
 
 ## Keeping it running
 
@@ -83,7 +91,7 @@ Environment=TUCANO_PORT=7337
 WantedBy=multi-user.target
 ```
 
-Then run `sudo systemctl enable --now tucano`. The logs, including the address with the token, are in `journalctl -u tucano`.
+Then run `sudo systemctl enable --now tucano`. The logs, including the address but never the token, are in `journalctl -u tucano`.
 
 To update Tucano, run `git pull && npm ci && npm run build && sudo systemctl restart tucano`.
 
@@ -94,7 +102,10 @@ To update Tucano, run `git pull && npm ci && npm run build && sudo systemctl res
 | `TUCANO_DATA` | `~/.tucano-server` | Where everything is kept: database, memory, agents' files, the key and the token |
 | `TUCANO_HOST` | `127.0.0.1` | The address to listen on |
 | `TUCANO_PORT` | `7337` | |
-| `TUCANO_TOKEN` | a random token, kept in `server-token` | Set it to use a token of your own |
+| `TUCANO_TOKEN` | a random token, kept in `server-token` | Set it to use a long random token of your own |
+| `TUCANO_COOKIE_SECURE` | unset | `1` requires HTTPS for authentication cookies; also tells the Origin check the external scheme is HTTPS |
+| `TUCANO_ORIGINS` | unset | Additional HTTP(S) origins, comma separated, for a proxy that rewrites Host |
+| `TUCANO_TRUST_PROXY` | unset | `1` trusts forwarded client IP/protocol headers only from loopback peers; see the restrictions above |
 
 ## How it differs from the desktop app
 

@@ -6,15 +6,16 @@
 // the server's token.
 //
 //   node out/main/server.js        (TUCANO_DATA, TUCANO_HOST, TUCANO_PORT, TUCANO_TOKEN)
-import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
+import { randomBytes, randomUUID } from 'node:crypto'
 import { EventEmitter } from 'node:events'
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { homedir } from 'node:os'
 import { extname, join, normalize, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { Forwarder, isPrivate } from './forward'
 import { vault } from './vault'
+import { clientKey, cookie, cookieToken, decodePart, parseOrigins, parseRpc, sameOrigin, sameToken, Strikes, trustedProxy } from './guard'
 
 const dataDir = process.env['TUCANO_DATA'] || join(homedir(), '.tucano-server')
 const host = process.env['TUCANO_HOST'] || '127.0.0.1'
@@ -93,12 +94,15 @@ const TYPES: Record<string, string> = {
 }
 
 function file(res: ServerResponse, path: string, headers: Record<string, string> = {}): void {
-  if (!existsSync(path)) return void res.writeHead(404).end('not found')
-  res.writeHead(200, { 'content-type': TYPES[extname(path).toLowerCase()] ?? 'application/octet-stream', ...headers }).end(readFileSync(path))
+  if (!existsSync(path) || !statSync(path).isFile()) return void res.writeHead(404).end('not found')
+  const data = readFileSync(path) // Read before sending headers: failures must not look like a successful response.
+  res.writeHead(200, { 'content-type': TYPES[extname(path).toLowerCase()] ?? 'application/octet-stream', ...headers }).end(data)
 }
 
-const sameToken = (t: string | undefined): boolean => !!t && t.length === token.length && timingSafeEqual(Buffer.from(t), Buffer.from(token))
-const cookieToken = (req: IncomingMessage): string | undefined => /(?:^|;\s*)tucano=([^;]+)/.exec(req.headers.cookie ?? '')?.[1]
+const strikes = new Strikes()
+const origins = parseOrigins(process.env['TUCANO_ORIGINS'])
+const cookieSecure = process.env['TUCANO_COOKIE_SECURE'] === '1'
+const trustProxy = process.env['TUCANO_TRUST_PROXY'] === '1'
 
 // The pages agents serve (a dashboard, an API) listen on the server's own
 // loopback. On a private address (Tailscale, a home network) each running one
@@ -131,33 +135,76 @@ function index(): string {
     .replace('<title>', '<meta name="viewport" content="width=device-width, initial-scale=1" />\n    <script src="./tucano-web.js"></script>\n    <title>')
 }
 
-function body(req: IncomingMessage): Promise<string> {
+function body(req: IncomingMessage, limit = 64 * 1024 * 1024): Promise<string> {
   return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = []
+    let chunks: Buffer[] = []
     let size = 0
     req.on('data', (c: Buffer) => {
       size += c.length
-      if (size > 64 * 1024 * 1024) return reject(new Error('too large'))
+      if (size > limit) {
+        chunks = []
+        reject(new Error('too large'))
+        return // Drain the request without retaining further bytes.
+      }
       chunks.push(c)
     })
     req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
     req.on('error', reject)
+    req.on('aborted', () => reject(new Error('aborted')))
   })
 }
 
-const server = createServer((req, res) => {
-  const url = new URL(req.url ?? '/', 'http://x')
-  // The link with ?token= signs this browser in, then drops it from the address bar. Lax, not
-  // Strict: the link is often clicked from elsewhere (a chat), and a Strict cookie wouldn't ride
-  // the redirect that follows. Lax still keeps it off other sites' POSTs to /rpc.
-  if (sameToken(url.searchParams.get('token') ?? undefined)) {
-    const secure = req.headers['x-forwarded-proto'] === 'https' ? '; Secure' : ''
-    return void res.writeHead(302, { 'set-cookie': `tucano=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=31536000${secure}`, location: '/' }).end()
+// The token goes in a POST body, never a URL, redirect or server log. No scripts or external resources.
+const LOGIN = `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tucano</title><h1>Tucano</h1>
+<p>Enter the token from the server-token file or TUCANO_TOKEN setting. / Digite o token do arquivo server-token ou da configuração TUCANO_TOKEN.</p>
+<form method="post" action="/login"><label>Token <input name="token" type="password" autocomplete="current-password" required></label>
+<button type="submit">Sign in / Entrar</button></form></html>`
+
+function fail(res: ServerResponse): void {
+  if (res.headersSent) res.destroy()
+  else res.writeHead(500).end()
+}
+
+async function route(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+  const secure = cookieSecure || (trustedProxy(req.socket.remoteAddress, trustProxy) && req.headers['x-forwarded-proto'] === 'https')
+  // Check before authentication so a foreign page cannot consume login attempts or set a cookie.
+  if (['/login', '/events', '/rpc'].includes(url.pathname) && !sameOrigin(req.headers.origin, req.headers.host, secure, origins)) {
+    return void res.writeHead(403).end()
   }
-  if (!sameToken(cookieToken(req))) {
-    return void res
-      .writeHead(401, { 'content-type': 'text/plain; charset=utf-8' })
-      .end('Tucano: open the link with the token the server printed (…/?token=…).\nTucano: abra o link com o token que o servidor mostrou (…/?token=…).')
+  if (url.searchParams.has('token')) return void res.writeHead(400).end('Use the sign-in form at /. / Use o formulário de entrada em /.')
+
+  const who = clientKey(req.socket.remoteAddress, req.headers['x-forwarded-for'], trustProxy)
+  const limited = (): boolean => {
+    const wait = strikes.retryAfter(who)
+    if (!wait) return false
+    res.writeHead(429, { 'retry-after': String(wait) }).end('Too many wrong tokens. Try again later. / Tokens errados demais. Tente mais tarde.')
+    return true
+  }
+  if (limited()) return
+  const saved = cookieToken(req.headers.cookie)
+  const signedIn = sameToken(saved, token)
+  if (saved !== undefined && !signedIn) res.setHeader('set-cookie', cookie('', secure))
+
+  if (url.pathname === '/login') {
+    if (req.method !== 'POST') return void res.writeHead(405, { allow: 'POST' }).end()
+    if (req.headers['content-type']?.split(';')[0]?.trim() !== 'application/x-www-form-urlencoded') return void res.writeHead(415).end()
+    let text: string
+    try { text = await body(req, 4096) } catch { return void res.writeHead(413).end() }
+    // Several bodies may arrive together; check again before trying each token.
+    if (limited()) return
+    const given = new URLSearchParams(text).get('token') ?? ''
+    if (!sameToken(given, token)) {
+      strikes.fail(who)
+      return void res.writeHead(401, { 'content-type': TYPES['.html']!, 'content-security-policy': "default-src 'none'; form-action 'self'; frame-ancestors 'none'" }).end(LOGIN)
+    }
+    strikes.clear(who)
+    return void res.writeHead(303, { 'set-cookie': cookie(token, secure), location: '/' }).end()
+  }
+  if (!signedIn) {
+    // A plain visit is not a guess. A stale cookie is expired so it will only count once in a browser.
+    if (saved !== undefined) strikes.fail(who)
+    return void res.writeHead(401, { 'content-type': TYPES['.html']!, 'content-security-policy': "default-src 'none'; form-action 'self'; frame-ancestors 'none'" }).end(LOGIN)
   }
 
   if (url.pathname === '/events') {
@@ -179,13 +226,12 @@ const server = createServer((req, res) => {
   if (url.pathname === '/rpc' && req.method === 'POST') {
     const c = clients.get(url.searchParams.get('c') ?? '')
     if (!c) return void res.writeHead(410).end()
-    body(req).then(
-      (text) => {
-        c.emit('message', { data: JSON.parse(text) })
-        res.writeHead(204).end()
-      },
-      () => res.writeHead(413).end()
-    )
+    let text: string
+    try { text = await body(req) } catch { return void res.writeHead(413).end() }
+    const msg = parseRpc(text)
+    if (!msg) return void res.writeHead(400).end()
+    c.emit('message', { data: msg })
+    res.writeHead(204).end()
     return
   }
 
@@ -193,16 +239,35 @@ const server = createServer((req, res) => {
   const art = /^\/artifact\/([0-9a-f-]{36})\/([^/]+)$/.exec(url.pathname)
   if (art) {
     const dir = join(dataDir, 'artifacts', art[1]!)
-    const path = normalize(join(dir, decodeURIComponent(art[2]!)))
+    const name = decodePart(art[2]!)
+    if (name === undefined) return void res.writeHead(400).end()
+    const path = normalize(join(dir, name))
     if (!path.startsWith(dir + sep)) return void res.writeHead(404).end()
     return file(res, path, { 'content-security-policy': 'sandbox allow-scripts allow-popups' })
   }
 
   if (url.pathname === '/tucano-web.js') return void res.writeHead(200, { 'content-type': TYPES['.js']! }).end(WEB)
   if (url.pathname === '/' || url.pathname === '/index.html') return void res.writeHead(200, { 'content-type': TYPES['.html']!, 'cache-control': 'no-cache' }).end(index())
-  const path = normalize(join(page, decodeURIComponent(url.pathname)))
+  const name = decodePart(url.pathname)
+  if (name === undefined) return void res.writeHead(400).end()
+  const path = normalize(join(page, name))
   if (!path.startsWith(page + sep)) return void res.writeHead(404).end()
   file(res, path)
+}
+
+const server = createServer((req, res) => {
+  res.setHeader('x-content-type-options', 'nosniff')
+  res.setHeader('referrer-policy', 'no-referrer')
+  res.setHeader('cache-control', 'no-store')
+  let url: URL
+  try {
+    const target = req.url ?? '/'
+    if (!target.startsWith('/') || target.startsWith('//')) throw new Error('invalid target')
+    url = new URL(target, 'http://localhost')
+  } catch {
+    return void res.writeHead(400).end()
+  }
+  void route(req, res, url).catch(() => fail(res))
 })
 
 // window.tucano for a browser: the core's port comes from the event stream and
@@ -253,7 +318,9 @@ watcher.emit('message', { data: { id: 1, method: 'snapshot' } })
 
 server.listen(port, host, () => {
   const shown = host === '0.0.0.0' || host === '::' ? 'localhost' : host
-  console.log(`Tucano server: http://${shown}:${port}/?token=${token}`)
+  const listening = server.address()
+  console.log(`Tucano server: http://${shown.includes(':') ? `[${shown}]` : shown}:${typeof listening === 'object' && listening ? listening.port : port}/`)
+  console.log(process.env['TUCANO_TOKEN'] ? 'Sign in with the token configured in TUCANO_TOKEN.' : `Sign in with the token in ${join(dataDir, 'server-token')}.`)
   console.log(`Data: ${dataDir}`)
   if (host === '127.0.0.1') console.log('Listening on this machine only: reach it through an SSH tunnel, Tailscale or a reverse proxy with HTTPS (docs/server.md).')
 })

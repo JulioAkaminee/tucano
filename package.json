@@ -17,7 +17,8 @@
     "dist": "sh scripts/dist.sh",
     "dist:win": "npm run build && electron-builder --win nsis --x64 --publish never",
     "install-app": "npm run dist && sh scripts/install-app.sh",
-    "release": "sh scripts/release.sh"
+    "release": "sh scripts/release.sh",
+    "test:server": "node --test scripts/server-e2e.mjs"
   },
   "devDependencies": {
     "@mozilla/readability": "^0.6.0",
