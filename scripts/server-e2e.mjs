@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { runInNewContext } from 'node:vm'
 
 const entry = fileURLToPath(new URL('../out/main/server.js', import.meta.url))
 const servers = []
@@ -90,9 +91,32 @@ function events(server, headers = auth(server)) {
   })
 }
 
+// Run the actual served bridge with controlled browser transports, not a second implementation.
+function bridge(script, fetch) {
+  let channel, stream, reloads = 0
+  const replies = []
+  class Events {
+    constructor() { stream = this }
+    addEventListener(name, fn) { this[name] = fn }
+  }
+  class Channel {
+    constructor() {
+      channel = this
+      this.port1 = {}
+      this.port2 = { postMessage: (reply) => replies.push(JSON.parse(JSON.stringify(reply))) }
+    }
+  }
+  const window = { postMessage() {} }
+  runInNewContext(script, { window, MessageChannel: Channel, EventSource: Events, fetch, location: { reload: () => reloads++ }, prompt: () => null })
+  window.tucano.connect()
+  stream.hello({ data: 'test-client' })
+  return { replies, reloads: () => reloads, send: (data) => channel.port2.onmessage({ data }), event: (data) => stream.onmessage({ data: JSON.stringify(data) }) }
+}
+
 test('built server authentication and request boundaries', { timeout: 90_000 }, async (t) => {
   const server = await start()
   const origin = `http://127.0.0.1:${server.port}`
+  const script = (await http(server, { path: '/tucano-web.js', headers: auth(server) })).text
   await t.test('startup and unauthenticated responses contain no token', async () => {
     assert.ok(!server.log().includes(server.token))
     assert.ok(!server.log().includes('?token='))
@@ -153,6 +177,52 @@ test('built server authentication and request boundaries', { timeout: 90_000 }, 
     assert.match(stream.seen(), /"id":42,"result":/)
     stream.close()
   })
+  await t.test('browser bridge settles refused or failed requests, preserves ids and waits for successful SSE replies', async () => {
+    for (const status of [200, 400, 401, 403, 413, 429, 500]) {
+      let requests = 0
+      const web = bridge(script, async () => {
+        requests++
+        return { status, headers: new Map(status === 429 ? [['retry-after', '600']] : []), text: () => { throw new Error('must not expose response bodies') } }
+      })
+      await web.send({ id: status, method: 'snapshot' })
+      assert.equal(web.replies.length, 1)
+      assert.equal(web.replies[0].id, status)
+      assert.match(web.replies[0].error, new RegExp(`HTTP ${status}`))
+      if (status === 429) assert.match(web.replies[0].error, /Retry-After: 600/)
+      assert.equal(requests, 1, 'never automatically replay a failed POST')
+      assert.equal(web.reloads(), 0)
+    }
+    const offline = bridge(script, async () => { throw new Error('private network detail') })
+    await offline.send({ id: 71, method: 'snapshot' })
+    assert.equal(offline.replies[0].id, 71)
+    assert.equal(typeof offline.replies[0].error, 'string')
+    assert.ok(!offline.replies[0].error.includes('private network detail'))
+    assert.equal(offline.replies.length, 1)
+    const invalid = bridge(script, () => { throw new Error('must not send an unserializable body') })
+    await invalid.send({ id: 74, method: 'snapshot', params: { invalid: 1n } })
+    assert.equal(invalid.replies.length, 1)
+    assert.equal(invalid.replies[0].id, 74)
+    assert.equal(typeof invalid.replies[0].error, 'string')
+    const success = bridge(script, async () => ({ status: 204 }))
+    await success.send({ id: 72, method: 'snapshot' })
+    assert.deepEqual(success.replies, [], '204 only acknowledges receipt')
+    success.event({ id: 72, result: { ready: true } })
+    assert.deepEqual(success.replies, [{ id: 72, result: { ready: true } }])
+    const gone = bridge(script, async () => ({ status: 410, headers: new Map() }))
+    await gone.send({ id: 73, method: 'snapshot' })
+    assert.equal(gone.replies[0].id, 73)
+    assert.match(gone.replies[0].error, /HTTP 410/)
+    assert.equal(gone.reloads(), 1, 'keep recovery for an expired stream')
+    const pending = []
+    const parallel = bridge(script, () => new Promise((resolve) => pending.push(resolve)))
+    const first = parallel.send({ id: 80, method: 'snapshot' })
+    const second = parallel.send({ id: 81, method: 'snapshot' })
+    pending[1]({ status: 403, headers: new Map() })
+    await second
+    pending[0]({ status: 500, headers: new Map() })
+    await first
+    assert.deepEqual(parallel.replies.map((reply) => reply.id), [81, 80])
+  })
   await t.test('stale cookies expire, plain visits do not count, forwarded IPs cannot evade limits', async () => {
     const stale = await http(server, { headers: { cookie: 'tucano=invalid' } })
     assert.equal(stale.status, 401)
@@ -164,6 +234,20 @@ test('built server authentication and request boundaries', { timeout: 90_000 }, 
     assert.equal(limited.status, 429)
     assert.ok(Number(limited.headers['retry-after']) > 0)
     assert.equal((await http(server, { headers: auth(server) })).status, 429, 'cookie guesses cannot bypass the limit')
+    let requests = 0, retryAfter
+    const limitedBridge = bridge(script, async (path, options) => {
+      requests++
+      const response = await http(server, { method: options.method, path: path.slice(1), headers: { ...options.headers, ...auth(server) }, body: options.body })
+      retryAfter = response.headers['retry-after']
+      return { status: response.status, headers: new Map(Object.entries(response.headers)) }
+    })
+    await limitedBridge.send({ id: 99, method: 'snapshot' })
+    assert.equal(limitedBridge.replies.length, 1)
+    assert.equal(limitedBridge.replies[0].id, 99)
+    assert.match(limitedBridge.replies[0].error, /HTTP 429/)
+    assert.ok(limitedBridge.replies[0].error.includes(`Retry-After: ${retryAfter}`))
+    assert.equal(requests, 1)
+    assert.equal(limitedBridge.reloads(), 0)
     assert.ok(!server.log().includes(server.token))
   })
   await stop(server)

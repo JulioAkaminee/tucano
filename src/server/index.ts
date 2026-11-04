@@ -286,10 +286,19 @@ const WEB = `(() => {
       window.postMessage('core:port', '*', [ch.port1])
     })
     es.onmessage = (e) => ch.port2.postMessage(JSON.parse(e.data))
-    ch.port2.onmessage = (m) => {
-      fetch('./rpc?c=' + encodeURIComponent(client), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(m.data) }).then((r) => {
+    ch.port2.onmessage = async (m) => {
+      const id = m.data.id
+      try {
+        const r = await fetch('./rpc?c=' + encodeURIComponent(client), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(m.data) })
+        if (r.status === 204) return // The core's reply still arrives on the event stream.
+        const retry = r.headers.get('retry-after')
+        const error = 'Falha na solicitação (HTTP ' + r.status + '). / Request failed (HTTP ' + r.status + ').' + (retry ? ' Retry-After: ' + retry + '.' : '')
+        ch.port2.postMessage({ id, error })
         if (r.status === 410) location.reload()
-      })
+      } catch {
+        // A failed POST may already have reached the core. Settle it, but never replay it.
+        ch.port2.postMessage({ id, error: 'Não foi possível concluir a solicitação ao servidor. / Could not complete the request to the server.' })
+      }
     }
   }
   window.tucano = {
